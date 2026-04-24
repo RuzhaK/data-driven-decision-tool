@@ -1,0 +1,80 @@
+function targetPriceReachedAlerts() {
+  const EMAIL_TO = Session.getActiveUser().getEmail(); // simplest: send to you
+  const SHEET_NAME = "Sheet1"; // change to your tab name if different
+
+  // A Ticker, B Price, C DayPct, D Target, E High52, F Low52, G MoveAlert, H NearLow, I NearHigh, J Notes
+  const ss = SpreadsheetApp.getActive();
+  const sheet = ss.getSheetByName(SHEET_NAME);
+  if (!sheet) throw new Error(`Sheet "${SHEET_NAME}" not found`);
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+
+  const data = sheet.getRange(2, 1, lastRow - 1, 10).getValues(); // A:J
+  const props = PropertiesService.getScriptProperties();
+  const alerts = [];
+
+  // Ensure log sheet exists once (avoid recreating/looking up inside loop)
+  const logSheet = ss.getSheetByName("AlertLog") || ss.insertSheet("AlertLog");
+
+  for (const row of data) {
+    const ticker = row[0];      // A
+    const priceRaw = row[1];    // B
+    const targetRaw = row[3];   // D
+    const low52Raw = row[5];    // F
+    const notes = (row[9] || "").toString(); // J
+
+    if (!ticker) continue;
+    if (priceRaw === "" || priceRaw === null) continue;
+
+    const price = Number(priceRaw);
+    if (!isFinite(price)) continue;
+
+    // ----------------------------
+    // 1) Target price alert
+    // ----------------------------
+    if (targetRaw !== "" && targetRaw !== null) {
+      const target = Number(targetRaw);
+      if (isFinite(target)) {
+        // Default BELOW (alert when price <= target). Put "ABOVE" anywhere in Notes to flip logic.
+        const direction = notes.toUpperCase().includes("ABOVE") ? "ABOVE" : "BELOW";
+        const key = `TP|${ticker}|${target}|${direction}`;
+
+        if (props.getProperty(key) !== "1") {
+          const hit = (direction === "ABOVE") ? (price >= target) : (price <= target);
+          if (hit) {
+            alerts.push(`${ticker} target reached (${direction}) | Price: ${price} | Target: ${target}`);
+            props.setProperty(key, "1");
+            logSheet.appendRow([new Date(), ticker, "TARGET_" + direction, price, target]);
+          }
+        }
+      }
+    }
+
+    // ----------------------------
+    // 2) 52-week low alert
+    // Fires when price <= Low52 (F)
+    // ----------------------------
+    if (low52Raw !== "" && low52Raw !== null) {
+      const low52 = Number(low52Raw);
+      if (isFinite(low52)) {
+        const lowKey = `52WLOW|${ticker}|${low52}`;
+        if (props.getProperty(lowKey) !== "1") {
+          if (price <= low52) {
+            alerts.push(`${ticker} hit 52W LOW | Price: ${price} | Low52: ${low52}`);
+            props.setProperty(lowKey, "1");
+            logSheet.appendRow([new Date(), ticker, "52W_LOW", price, low52]);
+          }
+        }
+      }
+    }
+  }
+
+  if (alerts.length) {
+    MailApp.sendEmail({
+      to: EMAIL_TO,
+      subject: `Alerts (${alerts.length})`,
+      body: alerts.join("\n")
+    });
+  }
+}
